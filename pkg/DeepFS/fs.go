@@ -7,15 +7,16 @@ import (
 	"io/fs"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
 // /data/abc/test.zip/content/image.png
 type DeepFS struct {
-	baseFS  fs.FS
 	subFS   map[string]FSFactory
 	fsCache gcache.Cache
-	log     logging.Logger
+	baseFS  fs.FS
+	log     *logging.Logger
 }
 
 /*
@@ -45,10 +46,11 @@ var _logformat = logging.MustStringFormatter(
 
 
 */
-func NewDeepFS(baseFS fs.FS, log logging.Logger, cacheTimeout time.Duration, fss ...FSFactory) (*DeepFS, error) {
+func NewDeepFS(baseFS fs.FS, log *logging.Logger, cacheTimeout time.Duration, fss ...FSFactory) (*DeepFS, error) {
 	dfs := &DeepFS{
 		baseFS: baseFS,
 		subFS:  map[string]FSFactory{},
+		log:    log,
 	}
 	dfs.fsCache = gcache.New(500).
 		LRU().
@@ -60,9 +62,17 @@ func NewDeepFS(baseFS fs.FS, log logging.Logger, cacheTimeout time.Duration, fss
 				return
 			}
 			log.Infof("removing %s from cache", key)
-			fsc, ok := value.(FSWithClose)
+			fsc, ok := value.(fsWithCounter)
 			if !ok {
 				log.Errorf("invalid type of cached filesystem for %s", ext)
+			}
+			if fsc.hasOpenFiles() {
+				log.Infof("cached filesystem for %s has open files", ext)
+				if err := dfs.fsCache.Set(ext, value); err != nil {
+					log.Errorf("cannot reset cache entry for %s: %v", ext, err)
+				}
+
+				return
 			}
 			if err := fsc.Close(); err != nil {
 				log.Errorf("cannot close cached filesystem for %s: %v", ext, err)
@@ -79,36 +89,58 @@ func NewDeepFS(baseFS fs.FS, log logging.Logger, cacheTimeout time.Duration, fss
 	return dfs, nil
 }
 
-func (dfs *DeepFS) getFS(path, ext string) (fs.FS, error) {
+type fsWithCounter struct {
+	FSCloseReadDir
+	counter int64
+	log     *logging.Logger
+}
+
+func (fswc *fsWithCounter) inc() {
+	fswc.log.Infof("increment counter: %d", atomic.AddInt64(&fswc.counter, 1))
+}
+
+func (fswc *fsWithCounter) dec() {
+	fswc.log.Infof("decrement counter: %d", atomic.AddInt64(&fswc.counter, -1))
+}
+
+func (fswc *fsWithCounter) hasOpenFiles() bool {
+	return atomic.LoadInt64(&fswc.counter) > 0
+}
+
+func (dfs *DeepFS) getFS(path, ext string) (*fsWithCounter, error) {
 	fsInt, err := dfs.fsCache.Get(path)
-	fs, ok := fsInt.(FSWithClose)
-	if !ok {
-		return nil, errors.Errorf("invalid type in cache for %s: %T", path, fsInt)
-	}
-	if err != nil {
+	var f *fsWithCounter
+	if err == nil {
+		var ok bool
+		f, ok = fsInt.(*fsWithCounter)
+		if !ok {
+			return nil, errors.Errorf("invalid type in cache for %s: %T", path, fsInt)
+		}
+	} else {
 		sfs, ok := dfs.subFS[ext] // must work!!!!!
 		if !ok {                  // paranoia
 			return nil, errors.Errorf("invalid subFS for %s", ext)
 		}
-		fs, err = sfs.CreateFS(dfs.baseFS, path)
+		xf, err := sfs.CreateFS(dfs.baseFS, path)
 		if err != nil {
 			return nil, errors.Wrapf(err, "cannot create filesystem for %s", path)
 		}
-		if err := dfs.fsCache.Set(path, fs); err != nil {
+		if err := dfs.fsCache.Set(path, &fsWithCounter{FSCloseReadDir: xf, log: dfs.log}); err != nil {
 			return nil, errors.Wrapf(err, "cannot cache new filesystem for %s", path)
 		}
+
 	}
-	return fs, nil
+	return f, nil
 }
 
-func (dfs *DeepFS) pathFinder(path string) (fs.FS, string, string, error) {
+func (dfs *DeepFS) pathFinder(path string) (*fsWithCounter, string, string, error) {
 	parts := strings.Split(path, "/")
 	for idx, part := range parts {
 		ext := strings.ToLower(filepath.Ext(part))
 		for sext, _ := range dfs.subFS {
 			if sext == ext {
-				path1 := strings.Join(parts[0:idx], "/")
-				path2 := strings.Join(parts[idx:], "/")
+				path1 := strings.Join(parts[0:idx+1], "/")
+				path2 := strings.Join(parts[idx+1:], "/")
 				daFS, err := dfs.getFS(path1, ext)
 				if err != nil {
 					return nil, "", "", errors.Wrapf(err, "cannot get filesystem for %s", path)
@@ -118,4 +150,33 @@ func (dfs *DeepFS) pathFinder(path string) (fs.FS, string, string, error) {
 		}
 	}
 	return nil, "", "", nil
+}
+
+func (dfs *DeepFS) Open(name string) (fs.File, error) {
+	name = filepath.ToSlash(filepath.Clean(name))
+	nfs, _, path2, err := dfs.pathFinder(name)
+	if err != nil {
+		return nil, errors.Wrapf(err, "cannot determine path %s", name)
+	}
+	if nfs == nil {
+		return dfs.baseFS.Open(name)
+	}
+	f, err := nfs.Open(path2)
+	if err != nil {
+		return nil, err
+	}
+	nfs.inc()
+	return &File{File: f, daFS: nfs}, nil
+}
+
+func (dfs *DeepFS) ReadDir(name string) ([]fs.DirEntry, error) {
+	name = filepath.ToSlash(filepath.Clean(name))
+	nfs, _, path2, err := dfs.pathFinder(name)
+	if err != nil {
+		return nil, errors.Wrapf(err, "cannot determine path %s", name)
+	}
+	if nfs == nil {
+		return fs.ReadDir(dfs.baseFS, name)
+	}
+	return nfs.ReadDir(path2)
 }
