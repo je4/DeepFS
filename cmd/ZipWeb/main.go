@@ -2,57 +2,58 @@ package main
 
 import (
 	"context"
-	"github.com/gorilla/handlers"
-	"github.com/gorilla/mux"
-	"github.com/je4/DeepFS/v2/pkg/DeepFS"
-	"github.com/je4/ZipFS/v2/pkg/ZipFS"
-	"github.com/op/go-logging"
-	"io/fs"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
+
+	"github.com/gorilla/handlers"
+	"github.com/gorilla/mux"
+	"github.com/je4/DeepFS/v2/pkg/DeepFS"
+	"github.com/op/go-logging"
 )
 
-type ZipFSFactory struct{}
+// type ZipFSFactory struct{}
 
-func (zfsf *ZipFSFactory) GetExtension() string { return ".zip" }
+// func (zfsf *ZipFSFactory) GetExtension() string { return ".zip" }
 
-func (zfsf *ZipFSFactory) CreateFS(parent fs.FS, path string) (DeepFS.FSCloseReadDir, error) {
-	return ZipFS.NewZipFS(parent, path)
-}
+// func (zfsf *ZipFSFactory) CreateFS(parent fs.FS, path string) (DeepFS.FSCloseReadDir, error) {
+// 	return ZipFS.NewZipFS(parent, path)
+// }
 
 func main() {
-	var _logformat = logging.MustStringFormatter(
-		`%{time:2006-01-02T15:04:05.000} %{module}::%{shortfunc} [%{shortfile}] > %{level:.5s} - %{message}`,
-	)
-	var log *logging.Logger
-	var lf *os.File
-	log = logging.MustGetLogger("ZipWeb")
-	var err error
-	var logfile = ""
-	var loglevel = "DEBUG"
-	if logfile != "" {
-		lf, err = os.OpenFile(logfile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-		if err != nil {
-			log.Errorf("Cannot open logfile %v: %v", logfile, err)
-		}
-		//defer lf.CloseInternal()
+	// var _logformat = logging.MustStringFormatter(
+	// 	`%{time:2006-01-02T15:04:05.000} %{module}::%{shortfunc} [%{shortfile}] > %{level:.5s} - %{message}`,
+	// )
+	// var log *logging.Logger
+	// var lf *os.File
+	// log = logging.MustGetLogger("ZipWeb")
+	// var err error
+	// var logfile = ""
+	// var loglevel = "DEBUG"
+	// if logfile != "" {
+	// 	lf, err = os.OpenFile(logfile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	// 	if err != nil {
+	// 		log.Errorf("Cannot open logfile %v: %v", logfile, err)
+	// 	}
+	// 	//defer lf.CloseInternal()
 
-	} else {
-		lf = os.Stderr
-	}
-	backend := logging.NewLogBackend(lf, "", 0)
-	backendLeveled := logging.AddModuleLevel(backend)
-	backendLeveled.SetLevel(logging.GetLevel(loglevel), "")
+	// } else {
+	// 	lf = os.Stderr
+	// }
+	// backend := logging.NewLogBackend(lf, "", 0)
+	// backendLeveled := logging.AddModuleLevel(backend)
+	// backendLeveled.SetLevel(logging.GetLevel(loglevel), "")
 
-	logging.SetFormatter(_logformat)
-	logging.SetBackend(backendLeveled)
+	// logging.SetFormatter(_logformat)
+	// logging.SetBackend(backendLeveled)
 
-	zfsf := &ZipFSFactory{}
-	bfs := os.DirFS("C:/temp/")
-	nfs, err := DeepFS.NewDeepFS(bfs, log, time.Minute*3, zfsf)
+	log := DeepFS.CreateLogger("", logging.DEBUG.String(), "ZipWeb")
+	zfsf := &DeepFS.ZipFSFactory{}
+	// bfs := os.DirFS("C:/temp/")
+	bfs := os.DirFS("../../testdata")
+	nfs, err := DeepFS.NewDeepFS(bfs, log, 500, time.Minute*3, zfsf)
 	if err != nil {
 		log.Panic(err)
 	}

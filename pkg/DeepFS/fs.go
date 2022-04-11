@@ -1,14 +1,17 @@
 package DeepFS
 
 import (
-	"github.com/bluele/gcache"
-	"github.com/op/go-logging"
-	"github.com/pkg/errors"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/bluele/gcache"
+	"github.com/je4/ZipFS/v2/pkg/ZipFS"
+	"github.com/op/go-logging"
+	"github.com/pkg/errors"
 )
 
 // /data/abc/test.zip/content/image.png
@@ -19,21 +22,22 @@ type DeepFS struct {
 	log     *logging.Logger
 }
 
-/*
-var _logformat = logging.MustStringFormatter(
-	`%{time:2006-01-02T15:04:05.000} %{module}::%{shortfunc} [%{shortfile}] > %{level:.5s} - %{message}`,
-)
+func CreateLogger(logFileName string, logLevel string, loggerName string) *logging.Logger {
+	var _logformat = logging.MustStringFormatter(
+		`%{time:2006-01-02T15:04:05.000} %{module}::%{shortfunc} [%{shortfile}] > %{level:.5s} - %{message}`,
+	)
 	var log *logging.Logger
 	var lf *os.File
-	log = logging.MustGetLogger(module)
+	log = logging.MustGetLogger(loggerName)
 	var err error
+	var logfile = logFileName
+	var loglevel = logLevel
 	if logfile != "" {
 		lf, err = os.OpenFile(logfile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 		if err != nil {
 			log.Errorf("Cannot open logfile %v: %v", logfile, err)
 		}
 		//defer lf.CloseInternal()
-
 	} else {
 		lf = os.Stderr
 	}
@@ -44,15 +48,16 @@ var _logformat = logging.MustStringFormatter(
 	logging.SetFormatter(_logformat)
 	logging.SetBackend(backendLeveled)
 
+	return log
+}
 
-*/
-func NewDeepFS(baseFS fs.FS, log *logging.Logger, cacheTimeout time.Duration, fss ...FSFactory) (*DeepFS, error) {
+func NewDeepFS(baseFS fs.FS, log *logging.Logger, cacheSize int, cacheTimeout time.Duration, fss ...FSFactory) (*DeepFS, error) {
 	dfs := &DeepFS{
 		baseFS: baseFS,
 		subFS:  map[string]FSFactory{},
 		log:    log,
 	}
-	dfs.fsCache = gcache.New(500).
+	dfs.fsCache = gcache.New(cacheSize).
 		LRU().
 		Expiration(cacheTimeout).
 		EvictedFunc(func(key, value interface{}) {
@@ -87,6 +92,14 @@ func NewDeepFS(baseFS fs.FS, log *logging.Logger, cacheTimeout time.Duration, fs
 		dfs.subFS[ext] = sfs
 	}
 	return dfs, nil
+}
+
+type ZipFSFactory struct{}
+
+func (zfsf *ZipFSFactory) GetExtension() string { return ".zip" }
+
+func (zfsf *ZipFSFactory) CreateFS(parent fs.FS, path string) (FSCloseReadDir, error) {
+	return ZipFS.NewZipFS(parent, path)
 }
 
 type fsWithCounter struct {

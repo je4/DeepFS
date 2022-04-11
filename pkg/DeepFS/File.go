@@ -1,8 +1,9 @@
 package DeepFS
 
 import (
-	"github.com/pkg/errors"
 	"io/fs"
+
+	"github.com/pkg/errors"
 )
 
 type File struct {
